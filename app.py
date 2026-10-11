@@ -1,4 +1,3 @@
-
 import os
 import hmac
 from datetime import datetime, timezone, timedelta
@@ -6,6 +5,7 @@ from functools import wraps
 
 import jwt
 from flask import Flask, jsonify, request
+from flasgger import Swagger
 
 # ============================================================
 # CONFIGURACAO FLASK, OAUTH 2.0 E API KEY
@@ -17,18 +17,60 @@ ISSUER = "https://python-api-lab.onrender.com"
 AUDIENCE = "python-api-lab"
 TOKEN_TTL = 3600
 
-CLIENT_ID = os.environ["OAUTH_CLIENT_ID"]
-CLIENT_SECRET = os.environ["OAUTH_CLIENT_SECRET"]
-JWT_SECRET = os.environ["JWT_SECRET_KEY"]
-
-# NOVO: Chave de autenticacao API Key
-API_KEY = os.environ["API_KEY"]
+CLIENT_ID = os.environ.get("OAUTH_CLIENT_ID", "")
+CLIENT_SECRET = os.environ.get("OAUTH_CLIENT_SECRET", "")
+JWT_SECRET = os.environ.get("JWT_SECRET_KEY", "")
+API_KEY = os.environ.get("API_KEY", "")
 
 if not CLIENT_ID or not CLIENT_SECRET or len(JWT_SECRET) < 32:
     raise RuntimeError("Invalid OAuth configuration")
 
 if len(API_KEY) < 32:
     raise RuntimeError("API_KEY must have at least 32 characters")
+
+# Configuração do Swagger UI
+swagger_config = {
+    "headers": [],
+    "specs": [
+        {
+            "endpoint": "apispec",
+            "route": "/apispec.json",
+            "rule_filter": lambda rule: True,
+            "model_filter": lambda tag: True,
+        }
+    ],
+    "static_url_path": "/flasgger_static",
+    "swagger_ui": True,
+    "specs_route": "/apidocs/"
+}
+
+swagger_template = {
+    "swagger": "2.0",
+    "info": {
+        "title": "Python API Lab",
+        "description": "API Lab para testes de integração com OAuth 2.0, JWT Bearer e API Key.",
+        "version": "1.0.0"
+    },
+    "host": os.environ.get("SWAGGER_HOST", "python-api-lab.onrender.com"),
+    "basePath": "/",
+    "schemes": ["https", "http"],
+    "securityDefinitions": {
+        "Bearer": {
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header",
+            "description": "Informe no formato: Bearer <seu_token_jwt>"
+        },
+        "ApiKeyAuth": {
+            "type": "apiKey",
+            "name": "x-api-key",
+            "in": "header",
+            "description": "Sua chave de API de 32+ caracteres"
+        }
+    }
+}
+
+swagger = Swagger(app, config=swagger_config, template=swagger_template)
 
 
 # ============================================================
@@ -74,10 +116,19 @@ def generate_access_token():
 
 @app.route("/", methods=["GET"])
 def home():
-
+    """
+    Informações da Aplicação
+    ---
+    tags:
+      - System
+    responses:
+      200:
+        description: Retorna metadados da API e endpoints disponíveis.
+    """
     return jsonify({
         "application": "Python API Lab",
         "status": "online",
+        "documentation": "/apidocs/",
         "authentication": [
             "OAuth 2.0 Client Credentials",
             "JWT Bearer Token",
@@ -98,7 +149,15 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health():
-
+    """
+    Health Check
+    ---
+    tags:
+      - System
+    responses:
+      200:
+        description: Status da aplicação.
+    """
     return jsonify({
         "status": "ok"
     }), 200
@@ -111,7 +170,32 @@ def health():
 
 @app.route("/oauth/token", methods=["POST"])
 def token_basic():
-
+    """
+    OAuth 2.0 Token (Basic Auth)
+    ---
+    tags:
+      - OAuth 2.0
+    consumes:
+      - application/x-www-form-urlencoded
+    parameters:
+      - name: Authorization
+        in: header
+        required: true
+        type: string
+        description: Credenciais no formato Basic Base64(client_id:client_secret)
+      - name: grant_type
+        in: formData
+        type: string
+        required: true
+        enum: [client_credentials]
+    responses:
+      200:
+        description: Token gerado com sucesso.
+      400:
+        description: Requisição inválida ou grant_type não suportado.
+      401:
+        description: Credenciais de cliente inválidas.
+    """
     if request.mimetype != "application/x-www-form-urlencoded":
         return jsonify({
             "error": "invalid_request",
@@ -136,13 +220,8 @@ def token_basic():
     supplied_id = auth.username or ""
     supplied_secret = auth.password or ""
 
-    valid_id = hmac.compare_digest(
-        supplied_id, CLIENT_ID
-    )
-
-    valid_secret = hmac.compare_digest(
-        supplied_secret, CLIENT_SECRET
-    )
+    valid_id = hmac.compare_digest(supplied_id, CLIENT_ID)
+    valid_secret = hmac.compare_digest(supplied_secret, CLIENT_SECRET)
 
     if not (valid_id and valid_secret):
         return jsonify({
@@ -161,7 +240,35 @@ def token_basic():
 
 @app.route("/oauth/token/client-credentials", methods=["POST"])
 def token_client_credentials():
-
+    """
+    OAuth 2.0 Token (Form Body)
+    ---
+    tags:
+      - OAuth 2.0
+    consumes:
+      - application/x-www-form-urlencoded
+    parameters:
+      - name: grant_type
+        in: formData
+        type: string
+        required: true
+        enum: [client_credentials]
+      - name: client_id
+        in: formData
+        type: string
+        required: true
+      - name: client_secret
+        in: formData
+        type: string
+        required: true
+    responses:
+      200:
+        description: Token gerado com sucesso.
+      400:
+        description: Requisição inválida.
+      401:
+        description: Credenciais de cliente inválidas.
+    """
     if request.mimetype != "application/x-www-form-urlencoded":
         return jsonify({
             "error": "invalid_request",
@@ -183,13 +290,8 @@ def token_client_credentials():
             "error": "unsupported_grant_type"
         }), 400
 
-    valid_id = hmac.compare_digest(
-        client_id, CLIENT_ID
-    )
-
-    valid_secret = hmac.compare_digest(
-        client_secret, CLIENT_SECRET
-    )
+    valid_id = hmac.compare_digest(client_id, CLIENT_ID)
+    valid_secret = hmac.compare_digest(client_secret, CLIENT_SECRET)
 
     if not (valid_id and valid_secret):
         return jsonify({
@@ -210,10 +312,7 @@ def require_oauth(required_scope):
         @wraps(function)
         def wrapper(*args, **kwargs):
 
-            authorization = request.headers.get(
-                "Authorization", ""
-            )
-
+            authorization = request.headers.get("Authorization", "")
             parts = authorization.split()
 
             if len(parts) != 2 or parts[0].lower() != "bearer":
@@ -268,7 +367,7 @@ def require_oauth(required_scope):
 
 
 # ============================================================
-# NOVO: DECORATOR - VALIDACAO DE API KEY
+# DECORATOR - VALIDACAO DE API KEY
 # ============================================================
 
 def require_api_key(function):
@@ -276,10 +375,8 @@ def require_api_key(function):
     @wraps(function)
     def wrapper(*args, **kwargs):
 
-        # Recupera a chave recebida no header HTTP
         supplied_key = request.headers.get("x-api-key", "")
 
-        # Chave nao informada
         if not supplied_key:
             return jsonify({
                 "status": "error",
@@ -287,7 +384,6 @@ def require_api_key(function):
                 "message": "Header x-api-key is required"
             }), 401
 
-        # Compara a chave enviada com a chave do Render
         if not hmac.compare_digest(supplied_key, API_KEY):
             return jsonify({
                 "status": "error",
@@ -295,7 +391,6 @@ def require_api_key(function):
                 "message": "Invalid API Key"
             }), 401
 
-        # Chave valida: permite executar o endpoint
         return function(*args, **kwargs)
 
     return wrapper
@@ -308,7 +403,27 @@ def require_api_key(function):
 
 @app.route("/api/echo", methods=["POST"])
 def echo():
-
+    """
+    Echo Público
+    ---
+    tags:
+      - Echo Endpoints
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          example:
+            mensagem: "Teste Público"
+    responses:
+      200:
+        description: Retorna os dados JSON recebidos.
+      400:
+        description: JSON inválido.
+    """
     data = request.get_json(silent=True)
 
     if not isinstance(data, dict):
@@ -330,7 +445,31 @@ def echo():
 @app.route("/api/secure/echo", methods=["POST"])
 @require_oauth("echo:write")
 def secure_echo():
-
+    """
+    Echo Protegido (JWT Bearer)
+    ---
+    tags:
+      - Echo Endpoints
+    security:
+      - Bearer: []
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          example:
+            mensagem: "Teste JWT"
+    responses:
+      200:
+        description: Retorna os dados processados com sucesso.
+      401:
+        description: Token JWT ausente ou inválido.
+      403:
+        description: Escopo insuficiente.
+    """
     data = request.get_json(silent=True)
 
     if not isinstance(data, dict):
@@ -341,22 +480,42 @@ def secure_echo():
     return jsonify({
         "status": "success",
         "authenticated": True,
-        "received_at": datetime.now(
-            timezone.utc
-        ).isoformat(),
+        "received_at": datetime.now(timezone.utc).isoformat(),
         "data": data
     }), 200
 
 
 # ============================================================
-# NOVO: ENDPOINT PROTEGIDO COM API KEY
+# ENDPOINT PROTEGIDO COM API KEY
 # POST /api/apikey/echo
 # ============================================================
 
 @app.route("/api/apikey/echo", methods=["POST"])
 @require_api_key
 def api_key_echo():
-
+    """
+    Echo Protegido (API Key)
+    ---
+    tags:
+      - Echo Endpoints
+    security:
+      - ApiKeyAuth: []
+    consumes:
+      - application/json
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          example:
+            mensagem: "Teste API Key"
+    responses:
+      200:
+        description: Retorna os dados processados com sucesso.
+      401:
+        description: API Key ausente ou inválida.
+    """
     data = request.get_json(silent=True)
 
     if not isinstance(data, dict):
@@ -368,9 +527,7 @@ def api_key_echo():
         "status": "success",
         "authenticated": True,
         "authentication_method": "API_KEY",
-        "received_at": datetime.now(
-            timezone.utc
-        ).isoformat(),
+        "received_at": datetime.now(timezone.utc).isoformat(),
         "data": data
     }), 200
 
@@ -380,7 +537,6 @@ def api_key_echo():
 # ============================================================
 
 if __name__ == "__main__":
-
     app.run(
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 8000)),
